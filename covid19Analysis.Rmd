@@ -1,0 +1,249 @@
+---
+title: "COVID-19 JHU Data Analysis"
+author: "E Webb"
+date: "2024-06-23"
+output: pdf_document
+---
+_Libraries used: Tidyverse, Zoo, Forecast, GGPlot2_
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,out.height = "\\textheight",  out.width = "\\textwidth")
+```
+```{r libraries,include=FALSE}
+library("tidyverse")
+library("tinytex")
+library("zoo")
+library("forecast")
+library("ggplot2")
+```
+## Initialization
+### Read in Data from URLs
+```{r stepOne}
+url_in = paste("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/",
+"csse_covid_19_data/csse_covid_19_time_series/",sep="")
+fileNames = c("time_series_covid19_confirmed_global.csv",
+              "time_series_covid19_confirmed_US.csv",
+         "time_series_covid19_deaths_global.csv",
+         "time_series_covid19_deaths_US.csv")
+urls = str_c(url_in,fileNames)
+
+globalData <- read_csv(urls[1],show_col_types = FALSE)
+usData <- read_csv(urls[2],show_col_types = FALSE)
+globalDeaths <- read_csv(urls[3],show_col_types = FALSE)
+usDeaths <- read_csv(urls[4],show_col_types = FALSE)
+```
+### Tidying the Data
+We'll start with the global data.
+```{r tidyData_global}
+# First up is the global data
+globalData <- globalData %>% pivot_longer(cols = -c(`Province/State`,
+                                          `Country/Region`,Lat,Long),
+                                          names_to = "date",
+                                          values_to = "cases") %>%
+  select(-c(Lat,Long))
+globalData <- globalData %>% mutate(date=mdy(date))
+# Same but with global deaths
+globalDeaths <- globalDeaths %>% pivot_longer(cols=-c(`Province/State`,
+                                              `Country/Region`,Lat,Long),
+                                              names_to = "date",
+                                              values_to = "deaths") %>%
+              select(-c(Lat,Long)) %>% mutate(date=mdy(date))
+# Join cases & deaths
+globalData <- globalData %>% full_join(globalDeaths) %>% 
+  rename(Country_Region = `Country/Region`,Province_State = `Province/State`)
+globalData <- globalData %>% filter(cases > 0) # filter to exclude 0 cases
+globalData <- globalData %>% filter(deaths > 0)
+```
+Next up: US data.
+```{r tidyData_US}
+usData <- usData %>% pivot_longer(cols=-(UID:Combined_Key),
+                                  names_to="date",
+                                  values_to="cases") %>%
+  select(Admin2:cases) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+# Same for deaths
+usDeaths <- usDeaths %>% pivot_longer(cols=-(UID:Population),
+                                      names_to="date",
+                                      values_to="deaths") %>%
+  select(Admin2:deaths) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+usData <- usData %>% full_join(usDeaths)
+```
+Now we want to combine Province/State & Country/Region in the global data and add population data. We'll also group the data here by country.
+```{r moreGlobalTidying}
+globalData <- globalData %>% unite("Combined_Key",
+                           c(Province_State,Country_Region),
+                           sep = ",",
+                           na.rm = TRUE,
+                           remove = FALSE)
+uidURL = paste("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/",
+"csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv",sep="")
+popData <- read_csv(uidURL,show_col_types = FALSE)
+globalData <- globalData %>% left_join(popData,
+ by = c("Province_State","Country_Region","Combined_Key")) %>%
+  select(-c(UID,FIPS)) %>% select(Province_State,Country_Region,
+                                  date,cases,deaths,Population,
+                                  Combined_Key)
+# remove Winter Olympics as a country, and 
+# recode US = United States for later WHO ingestion
+globalData <- globalData %>% filter(Country_Region != "Winter Olympics 2022")
+globalData$Country_Region = recode(globalData$Country_Region,"US" = "United States of America")
+
+globalByCountry <- globalData %>% group_by(Province_State,Country_Region,date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  select(Province_State,Country_Region,date,cases,deaths,Population)
+globalByCountry <- globalByCountry %>% group_by(Country_Region,date) %>%
+  summarize(cases = sum(cases),deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  select(Country_Region,date,cases,deaths)
+```
+I really want to understand global COVID-19 cases & deaths, but looking at each individual country would be too much, so I'm going to get WHO region data from the same database & attempt to join that into my global data.
+```{r WHOstuff}
+whoURL = paste("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/",
+"master/who_covid_19_situation_reports/who_covid_19_sit_rep_time_series",
+"/who_covid_19_sit_rep_time_series.csv",sep="")
+whoData <- read_csv(whoURL,show_col_types = FALSE)
+whoData <- whoData %>% subset(select=-c(`Province/States`,`WHO region label`))
+whoData <- whoData %>% pivot_longer(cols=-c(`Country/Region`,`WHO region`),
+                                    names_to="date",
+                                    values_to="cases") %>%
+  mutate(date = mdy(date))
+whoData <- whoData %>% rename(Country_Region=`Country/Region`,
+                      WHO_Region = `WHO region`)
+whoData <- whoData %>% filter(Country_Region != "Globally")
+matchWho <- whoData %>% subset(select=c("Country_Region","WHO_Region")) 
+matchWho <- unique(matchWho)
+globalData <- globalData %>% left_join(matchWho,by = c("Country_Region")) %>%
+  select(Country_Region,date,cases,deaths,Population,Combined_Key,WHO_Region)
+
+globalByRegion <- globalData %>% group_by(WHO_Region,date) %>%
+  summarize(cases = sum(cases),deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  select(WHO_Region,date,cases,deaths)
+```
+## Analysis
+### Cumulative COVID-19 Cases by Global Region
+Now we're going to see how these cases evolve in each WHO Region over time-- specifically, in the first year of COVID-19 records.
+```{r regionPlot, echo=FALSE}
+africa <- globalByRegion %>% subset(grepl("African Region",WHO_Region,fixed=TRUE))
+med <- globalByRegion %>% subset(grepl("Eastern Mediterranean Region",WHO_Region,fixed=TRUE))
+europe <- globalByRegion %>% subset(grepl("European Region",WHO_Region,fixed= TRUE))
+america <- globalByRegion %>% subset(grepl("Region of the Americas",WHO_Region,fixed=TRUE))
+SE_asia <- globalByRegion %>% subset(grepl("South-East Asia Region",WHO_Region,fixed=TRUE))
+wPac <- globalByRegion %>% subset(grepl("Western Pacific Region",WHO_Region,fixed=TRUE))
+
+par(mar=c(5,5,4,2)) # increase side
+plot(africa$date,africa$cases,type="l",col="red",
+     xlab="Date",ylab="Cases",main="Global Cases by Region",ylim=c(1,1e8),
+     log="y",lwd=2,xlim=as.Date(c("2020-01-20","2021-01-01")))
+lines(med$date,med$cases,type="l",col="blue",lwd=2)
+lines(europe$date,europe$cases,type="l",col="green",lwd=2)
+lines(SE_asia$date,SE_asia$cases,type="l",col="magenta",lwd=2)
+lines(wPac$date,wPac$cases,type="l",col="black",lwd=2)
+lines(america$date,america$cases,"l",col="orange",lwd=2)
+legend("bottomright",
+       legend=c("Africa","Middle East","Europe","SE Asia","West. Pacific","Americas"),
+       col=c("red","blue","green","magenta","black","orange"),lty=1,lwd=2)
+```
+We notice a few things in this plot. First, we can almost definitively say the cases are reported cumulatively over time-- that is, we're not just recording new cases each day, but adding those to the previous day's total. Secondly, we can see how each global region was affected by COVID-19 and how quickly the population contracted the disease.
+
+Finally, it's easy to observe discrepancies in when different regions started reporting their COVID-19 data. Most countries start recording data in early January 2020, but Africa doesn't start counting COVID-19 cases until late February. The Western Pacific Region starts much higher than all of the other regions because the WHO defined it to include China, the generally accepted origin of the disease.
+
+*Possible Source of Bias:* We must remember this data set was collected by Johns Hopkins University in the United States, so its accuracy is dependent on how other countries collected and reported their data. During the COVID-19 pandemic, multiple countries (including India and China) were accused of under-reporting their cases and deaths.
+
+Let's also look at the deaths by region.
+```{r globalDeathsByRegion,echo=FALSE}
+par(mar=c(5,5,4,2)) # increase side
+plot(africa$date,africa$deaths,type="l",col="red",
+     xlab="Date",ylab="Deaths",main="Global Deaths by Region",
+     log="y",lwd=2,xlim=as.Date(c("2020-01-20","2021-01-01")),
+     ylim=c(1,1e8))
+lines(med$date,med$deaths,type="l",col="blue",lwd=2)
+lines(europe$date,europe$deaths,type="l",col="green",lwd=2)
+lines(SE_asia$date,SE_asia$deaths,type="l",col="magenta",lwd=2)
+lines(wPac$date,wPac$deaths,type="l",col="black",lwd=2)
+lines(america$date,america$deaths,"l",col="orange",lwd=2)
+legend("bottomright",
+       legend=c("Africa","Middle East","Europe","SE Asia","West. Pacific","Americas"),
+       col=c("red","blue","green","magenta","black","orange"),lty=1,lwd=2)
+```
+The Western Pacific region seems to lag behind the other global regions when it comes to reported deaths. As noted above, one must wonder if, since their rate of infection was comparable to other global regions, the deaths were under-reported in this data set.
+
+### Day-to-Day Cases by Global Region
+Let's next look at how the day-to-day case numbers evolve in each region.
+```{r dayByDay}
+africa <- africa %>% mutate(newCases = cases-lag(cases),
+                            newDeaths = deaths-lag(deaths))
+med <- med %>% mutate(newCases = cases-lag(cases),
+                      newDeaths = deaths-lag(deaths))
+europe <- europe %>% mutate(newCases = cases-lag(cases),
+                      newDeaths = deaths-lag(deaths))
+SE_asia <- SE_asia %>% mutate(newCases = cases-lag(cases),
+                      newDeaths = deaths-lag(deaths))
+wPac <- wPac %>% mutate(newCases = cases-lag(cases),
+                      newDeaths = deaths-lag(deaths))
+america <- america %>% mutate(newCases = cases-lag(cases),
+                      newDeaths = deaths-lag(deaths))
+```
+```{r plotDayByDay,echo=FALSE}
+par(mar=c(5,5,4,2)) # increase side
+plot(africa$date,africa$newCases,type="l",col="red",
+     xlab="Date",ylab="New Cases",main="Day-to-Day Cases by Region",
+     lwd=2,xlim=as.Date(c("2020-01-20","2021-01-01")),ylim=c(0,5e5))
+lines(med$date,med$newCases,type="l",col="blue",lwd=2)
+lines(europe$date,europe$newCases,type="l",col="green",lwd=2)
+lines(SE_asia$date,SE_asia$newCases,type="l",col="magenta",lwd=2)
+lines(wPac$date,wPac$newCases,type="l",col="black",lwd=2)
+lines(america$date,america$newCases,"l",col="orange",lwd=2)
+legend("topleft",
+       legend=c("Africa","Middle East","Europe","SE Asia","West. Pacific","Americas"),
+       col=c("red","blue","green","magenta","black","orange"),lty=1,lwd=2)
+```
+Countries in the African & West Pacific regions have a steady positive number of new cases per day, while the Americas and Europe are victims of exponential growth, especially through the end of 2020. Perhaps this increase in infection rate (in America) is due in part to a series of protests that swept the nation. Perhaps this is once again a victim of under-reporting.
+
+## Modeling
+### Linear Fit
+Looking specifically at the United States (from the global data set), let's attempt to fit a linear model to our data.
+```{r modeling}
+usFromGlobal <- globalData %>% subset(grepl("United States of America",Country_Region,fixed=TRUE))
+mod = lm(deaths ~ cases, data = usFromGlobal)
+usFromGlobal <- usFromGlobal %>% mutate(prediction = predict(mod))
+usFromGlobal
+```
+```{r modelPlot,echo=FALSE}
+par(mar=c(5,5,4,2))
+plot(usFromGlobal$cases,usFromGlobal$deaths,type="o",pch=19,
+     ylab="Deaths",xlab="Cases",main="Linear Model Fit",col="blue")
+points(usFromGlobal$cases,usFromGlobal$prediction,pch=19,col="red")
+legend("bottomright",legend=c("Original","Linear Model"),pch=19,col=c("blue","red"))
+```
+That works surprisingly well. It appears deaths and cases are strongly and positively correlated.
+### Prediction
+Okay, one more. Let's see how well a time series approximation works.
+```{r prediction}
+us2020 <- usFromGlobal %>% 
+  filter(between(usFromGlobal$date,as.Date("2020-01-22"),as.Date("2020-12-31"))) %>%
+  select(date,cases)
+aggMonth <- us2020 %>% group_by(month=lubridate::floor_date(date,"month")) %>%
+   summarize(summary_variable = sum(cases))
+aggMonth2 <- usFromGlobal %>% group_by(month=lubridate::floor_date(date,"month")) %>% 
+  summarize(summary_variable = sum(cases))
+actualData <- as.ts(read.zoo(aggMonth2,FUN=as.yearmon))
+df <- as.data.frame(aggMonth)
+ts_us2020 <- as.ts(read.zoo(df,FUN=as.yearmon)) # create prediction variable
+foresight = forecast(ts_us2020)
+
+autoplot(foresight,lwd=2,shaded=FALSE,main="Forecast of US COVID-19 Cases",
+         ylab="Time",xlab="Cases",xlim=c(2020,2023)) + 
+  autolayer(foresight$mean,series="Forecast",lwd=2) +
+  autolayer(actualData,lwd=2,series="Actual")
+```
+According to this forecast, the US will reach 1.2 billion cases by Dec 2022. In the actual data, the total cumulative cases in Dec 2022 was over 3 billion. It seems the trends in 2020 were not useful for predicting the outcome of the pandemic in subsequent years.
+## Conclusions
+COVID-19 was trying time for everyone. Now that we have some emotional & temporal distance, I find it interesting to look back on the data we as a world gathered during that time. We've noted a few findings, namely:
+
+* Countries in Africa did not begin recording COVID-19 infection data until much later than other regions. This could be because they didn't see cases until that time or because they didn't have the infrastructure to properly record new cases.
+
+* The Americas and Europe had the highest reported cumulative cases & cases per day. An increase in protests against lockdowns and police brutality in the latter half of 2020 could have led to increased infection rates.
+
+* The Western Pacific region (dominated by China) and the SE Asia region (dominated by India) consistently reported much fewer deaths than any other global region with comparable infection rates. This is a possible source of bias in the data as they were accused of under-reporting COVID-19 cases & deaths during the height of the pandemic.
+
+* Cases & deaths are highly correlated in the United States, according to the data collected at a country-wide level.
