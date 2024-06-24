@@ -1,0 +1,208 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+author: "E Webb"
+date: "2024-06-23"
+output: pdf_document
+---
+_Packages used: Tidyverse, Zoo, Forecast_
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r libraries,include=FALSE}
+library("tidyverse")
+library("zoo")
+library("forecast")
+library("tinytex")
+```
+
+## Initialization
+### Read in Data File & Make Observations
+
+```{r readitin}
+nypdData <- read.csv(file.path(getwd(),"NYPD_Shooting_Incident_Data__Historic_.csv"))
+summary(nypdData)
+```
+We start by examining the data as presented, noting there are 21 variables in this dataset & 28,562 observations. The data covers NYPD shooting incidents from 2006 - 2023.
+
+### Tidy the Dataset
+First, we'll convert the date into a date object. Then, I'm going to remove some variables I don't particularly care about -- the incident key, longitude/latitude combination, and the x/y coordinates.
+```{r makeItTidy}
+nypdData <- nypdData %>% mutate(OCCUR_DATE=mdy(OCCUR_DATE))
+nypdData <- nypdData %>% subset(select = -c(INCIDENT_KEY,Lon_Lat,X_COORD_CD,Y_COORD_CD))
+```
+Now we need to think about all of the missing data. From a cursory glance, we can see most of the location description columns have missing data, as well as the perp description columns. I don't think location description is particularly useful for large scale data analysis, so I'll remove it as well.
+```{r makeItTidy2}
+nypdData <- nypdData %>% subset(select = -c(LOCATION_DESC,LOC_OF_OCCUR_DESC,
+                                            LOC_CLASSFCTN_DESC,Latitude,Longitude))
+```
+Next I'll fix some outliers and replace nulls with "UNKNOWN".
+```{r makeItTidy3}
+# Remove outliers from perp age data & rename "null" to "unknown" for other perp description data.
+nypdData <- nypdData %>% filter(PERP_AGE_GROUP != "1020" 
+                                & PERP_AGE_GROUP != "224" & PERP_AGE_GROUP != "940")
+nypdData <- nypdData %>% replace_na(list(PERP_AGE_GROUP = "UNKNOWN", 
+                                         PERP_SEX = "UNKNOWN", PERP_RACE = "UNKNOWN"))
+nypdData$PERP_AGE_GROUP = recode(nypdData$PERP_AGE_GROUP,"(null)" = "UNKNOWN")
+nypdData$PERP_SEX = recode(nypdData$PERP_SEX, "U" = "UNKNOWN", "(null)" = "UNKNOWN")
+nypdData$PERP_RACE = recode(nypdData$PERP_RACE,"(null)" = "UNKNOWN")
+
+# Similarly, remove outlier from victim age group & replace nulls.
+nypdData <- nypdData %>% filter(VIC_AGE_GROUP != "1022")
+nypdData$VIC_SEX = recode(nypdData$VIC_SEX, "U" = "UNKNOWN")
+```
+Finally, we'll convert appropriate variables to factors.
+```{r makeItTidy4}
+nypdData$BORO = as.factor(nypdData$BORO)
+nypdData$PERP_AGE_GROUP = as.factor(nypdData$PERP_AGE_GROUP)
+nypdData$PERP_SEX = as.factor(nypdData$PERP_SEX)
+nypdData$PERP_RACE = as.factor(nypdData$PERP_RACE)
+nypdData$VIC_AGE_GROUP = as.factor(nypdData$VIC_AGE_GROUP)
+nypdData$VIC_RACE = as.factor(nypdData$VIC_RACE)
+nypdData$VIC_SEX = as.factor(nypdData$VIC_SEX)
+summary(nypdData)
+```
+This is now much easier to read and deal with!
+
+## Visualization & Analysis
+
+### Shooting Incidents by Borough
+```{r borough, echo=FALSE}
+t = table(nypdData$BORO)
+par(mar=c(8,5,4,2)) # increase top margin
+barplot(t,main="NYPD Shooting Incidents by Borough",las=2)
+t2 = prop.table(t)
+sprintf("Shootings in Brooklyn account for %.2f%% of NYPD shootings overall.",max(t2)*100)
+```
+Brooklyn has the highest number of shooting incidents-- nearly 40%! Meanwhile, Staten Island only accounts for 2% of reported incidents in that same time period. Now let's see how these incidents have changed over time.
+```{r borough2}
+bronxData <- nypdData %>% subset(select = c(OCCUR_DATE, BORO)) %>% 
+  subset(grepl("BRONX",BORO,fixed=TRUE))
+manData <- nypdData %>% subset(select = c(OCCUR_DATE, BORO)) %>%
+  subset(grepl("MANHATTAN",BORO,fixed=TRUE))
+brookData <- nypdData %>% subset(select = c(OCCUR_DATE,BORO)) %>% 
+  subset(grepl("BROOKLYN",BORO,fixed=TRUE))
+queenData <- nypdData %>% subset(select = c(OCCUR_DATE,BORO)) %>% 
+  subset(grepl("QUEENS",BORO,fixed = TRUE))
+statData <- nypdData %>% subset(select = c(OCCUR_DATE,BORO)) %>% 
+  subset(grepl("STATEN ISLAND",BORO,fixed=TRUE))
+# Add incident column & aggregate
+bronxData$CASE <- 1
+bronxData <- aggregate(bronxData$CASE,by=list(bronxData$OCCUR_DATE),sum)
+bronxData <- bronxData %>% group_by(year(Group.1)) %>% summarize(Incidents = sum(x))
+colnames(bronxData)[1] = "Year"
+manData$CASE <- 1
+manData <-aggregate(manData$CASE,by=list(manData$OCCUR_DATE),sum)
+manData <- manData %>% group_by(year(Group.1)) %>% summarize(Incidents = sum(x))
+brookData$CASE<- 1
+brookData<-aggregate(brookData$CASE,by=list(brookData$OCCUR_DATE),sum)
+brookData <- brookData %>% group_by(year(Group.1)) %>% summarize(Incidents = sum(x))
+queenData$CASE<-1
+queenData<-aggregate(queenData$CASE,by=list(queenData$OCCUR_DATE),sum)
+queenData <- queenData %>% group_by(year(Group.1)) %>% summarize(Incidents = sum(x))
+statData$CASE<-1
+statData<-aggregate(statData$CASE,by=list(statData$OCCUR_DATE),sum)
+statData <- statData %>% group_by(year(Group.1)) %>% summarize(Incidents = sum(x))
+# Now plot things
+x<-bronxData$Year
+y1<-bronxData$Incidents
+y2<-manData$Incidents
+y3<-brookData$Incidents
+y4<-queenData$Incidents
+y5<-statData$Incidents
+
+par(xpd=TRUE)
+par(mar=c(5,4,4,10)) # increase side
+matplot(x,cbind(y1,y2,y3,y4,y5),type="l",lty=1,col=c("red","blue","green","magenta","black"),
+xlab="Year",ylab="Shooting Incidents",main="Shooting Incidents by Year")
+legend("topright",inset=c(-0.55,0),
+       legend=c("Bronx","Manhattan","Brooklyn","Queens","Staten Island"),
+       col=c("red","blue","green","magenta","black"),lty=1)
+```
+Here we see gun violence had a general downward trend in all of the boroughs (though Brooklyn still had by far the most incidents each year) until 2020, when it spiked during the pandemic. This was the trend everywhere except Staten Island, which has had a fairly constant rate of gun violence incidents since the beginning of this data set. After the pandemic, the gun violence rates once again decreased.
+
+So what happened in 2020 (other than lockdowns, which one would theorize would not increase rates of gun violence) to cause such a dramatic uptick in shooting incidents? One thing I remember clearly from that summer is the George Floyd protests against police violence. Let's investigate how victim race correlates with these trends.
+
+### Shootings by Victim Race
+
+```{r race, echo=FALSE}
+r = prop.table(table(nypdData$VIC_RACE))
+par(mar=c(8,5,4,2)) # increase top margin
+barplot(r,main="NYPD Shooting Incidents by Victim Race",ylab="Fraction",las=2,
+        names.arg=c("NATIVE","AAPI","BLACK","BLACK-HISPANIC","UNKNOWN","WHITE","WHITE-HISPANIC"))
+```
+Sadly, but not surprisingly, the majority of gun violence victims here are Black.
+
+### Gun Violence Against Black/Black-Hispanic People in 2020+
+I'd like to understand gun violence against Black/Black-Hispanic people in NYC during the years 2020 & 2021. Let's sort the data.
+```{r sortByRace}
+blackShootingIncidents <- nypdData %>% subset(grepl("BLACK",VIC_RACE,fixed=TRUE))
+date<-blackShootingIncidents$OCCUR_DATE
+# Grab data from 2020
+incidents2020<-blackShootingIncidents %>% 
+  filter(between(date,as.Date('2020-01-01'),as.Date('2020-12-31')))
+incidents2020$case<-1 # add a column to count the case
+agg2020<-aggregate(incidents2020$case,by=list(incidents2020$OCCUR_DATE),sum)
+agg2020<-agg2020 %>% group_by(month(Group.1)) %>% summarize(Incidents = sum(x))
+colnames(agg2020)[1] = "Month"
+# Similarly, grab data from 2021
+incidents2021<-blackShootingIncidents %>% 
+  filter(between(date,as.Date('2021-01-01'),as.Date('2021-12-31')))
+incidents2021$case<-1
+agg2021<-aggregate(incidents2021$case,by=list(incidents2021$OCCUR_DATE),sum)
+agg2021<-agg2021 %>% group_by(month(Group.1)) %>% summarize(Incidents = sum(x))
+colnames(agg2021)[1] = "Month"
+
+# Now, plot it
+par(mar=c(8,5,4,2)) # increase top margin
+x<-agg2020$Month
+y1<-agg2020$Incidents
+y2<-agg2021$Incidents
+
+plot(y1,type="o",xlim=c(1,12),col='blue',
+     pch=19,main="Gun Violence Against Black People",
+     xlab="Month",ylab="Number of Shooting Incidents")
+points(x,y2,col="red",pch=19)
+lines(x,y2,col="red")
+legend("bottom",legend=c("2020","2021"),col = c("blue","red"),lwd=2)
+```
+There's a huge spike in gun violence against Black/Black-Hispanic people in the summer of 2020-- this lines up with a perceived increase in violence surrounding the George Floyd protests. If we look at the Statistical Murder Flag for 2020, we can see most of the incidents that year (82%) were thankfully not murder.
+
+But what about other races? Did gun violence also spike for them in 2020?
+```{r gunViolenceElse}
+notBlackShootingIncidents<- nypdData %>% subset(!grepl("BLACK",VIC_RACE,fixed=TRUE))
+date<-notBlackShootingIncidents$OCCUR_DATE
+incidentsNB2020<-notBlackShootingIncidents %>% 
+  filter(between(date,as.Date('2020-01-01'),as.Date('2020-12-31')))
+incidentsNB2020$CASE<-1
+aggNB2020<-aggregate(incidentsNB2020$CASE,by=list(incidentsNB2020$OCCUR_DATE),sum)
+aggNB2020<-aggNB2020 %>% group_by(month(Group.1)) %>% summarize(Incidents=sum(x))
+
+par(mar=c(8,5,4,2)) # increase top margin
+y3<-aggNB2020$Incidents
+matplot(x,cbind(y1,y3),type="l",lty=1,col=c("blue","red"),
+        main="Gun Violence in 2020",xlab="Month",ylab="Number of Shooting Incidents")
+legend("topleft",legend=c("Black Victims","Not Black Victims"),col=c("blue","red"),lty=1)
+```
+Well, there you have it-- gun violence in 2020 against Black/Black-Hispanic people increased dramatically as opposed to gun violence against any other race. 
+
+### Predicted Gun Violence Against Black/Black-Hispanic People in 2024+
+I'd like to see if we can predict any patterns in gun violence in the next few years (I'm including a model for 2024 because this dataset only includes incidents occurring until Dec 2023).
+```{r modeling}
+blackShootingIncidents$case<-1 # add case count
+aggYears<-aggregate(blackShootingIncidents$case,by=list(blackShootingIncidents$OCCUR_DATE),sum)
+aggMonth<-aggYears %>% 
+  group_by(month = lubridate::floor_date(Group.1,"month")) %>% 
+  summarize(summary_variable = sum(x))
+
+df = as.data.frame(aggMonth) # convert to data frame
+ts_data<-as.ts(read.zoo(df,FUN=as.yearmon)) # create a time series variable
+foresight<-forecast(ts_data)
+
+plot(foresight,xlim=c(2020,2026),
+     main="Forecast of Shooting Incidents Against Black People in NYC",
+     xlab="Year",ylab="Number of Incidents")
+```
+The predicted gun violence follows similar patterns to the previous years: it spikes in summertime, with minima on either end of the year. It also continues a general trend we see towards a decrease overall in gun violence. If we compare the peak number of incidents in 2020 (over 250) to the peak number of incidents in 2023 (closer to 100), we can see that gun violence appears to be decreasing against this demographic.
+
+## Conclusions
+This data is a wealth of information, and the story you tell with it really depends on how you aggregate and present the data. The George Floyd protests had a profound impact on gun violence in New York City in 2020, despite the pandemic lockdowns. In particular, gun violence against Black people during that time spiked more than any other racial group. However, I will remind the viewer that the data set shows all reported shooting incidents in NYC during 2006-2023, with no way to tell if this shooting was perpetuated by a police officer. Predictions suggest gun violence overall will continue to spike during the summer, however, shooting incidents should continue to decrease since settling back to pre-pandemic levels.
