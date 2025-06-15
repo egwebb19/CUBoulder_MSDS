@@ -1,5 +1,10 @@
-The aim of this project is to identify metastatic cancer in digital pathology scans (96x96 pixels).
+Machine learning has many potential applications; however, none are (to me) more rewarding than its applications in medicine. This particular project aims to identify metastatic cancer in small image patches (the center 32x32 pixels) taken from larger digital pathology scans (96x96 pixels).
 
-The dataset used in this project is a slightly modified version of the PatchCamelyon (PCam) benchmark dataset. A positive label (1) indicates that the image contains at least one pixel of tumor tissue, while a zero label indicates there is no tumor tissue present in the image.
+The dataset used in this project is a slightly modified version of the PatchCamelyon (PCam) benchmark dataset. A positive label (1) indicates that the center of the image contains at least one pixel of tumor tissue, while a zero label indicates there is no tumor tissue present in the image. The outer pixels are present for padding and do not influence the label of the image. There are three parts of this dataset:
 
-I am going to compare two CNNs: a very basic one focused on the center of the images (32x32 pixel selected area), and another using the entire image (after Gaussian Blur is applied) with batch normalization.
+train folder -- containing training images
+test folder -- containing testing images
+train_labels.csv -- a file mapping training image names to labels
+For this project, I am going to compare two CNN architectures: one very basic model, and another utilizing normalization layers (like BatchNormalization, etc).
+
+The data is not included in this repo because it was very large. To access the data, please look here: https://www.kaggle.com/competitions/histopathologic-cancer-detection/data 
