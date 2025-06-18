@@ -1,0 +1,9 @@
+The purpose of this project is to build a GAN to generate Monet-style paintings from images and then appropriately trick a classifier into saying those are actually Monet paintings. So here we are, attempting to forge classic works of art. Not exactly what I thought I'd be doing this week, but oh well.
+
+Our dataset consists of four directories:
+
+monet_tfrec/monet_jpeg -- these contain 300 images of Monet's paintings (256x256 pixels)
+photo_tfrec/photo_jpg -- these contain 7028 random photos (256x256 pixels)
+Note: the organizers of this competition suggest using the TFRecords format of the images instead of the JPEGs, so that is what I am going to do.
+
+We'll be using the Monet paintings to train our model. The output for submission is a .zip file containing between 7,000-10,000 256x256 pixel images which certainly look like Monets. The evaluation is based on MiFID (Memorization-informed Frechet Inception Distance), which is a modified form of Frechet Inception Distance (FID). This is a standard evaluation method for GANs.
