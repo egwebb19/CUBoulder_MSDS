@@ -1,3 +1,5 @@
+Kaggle Workbook: https://www.kaggle.com/code/altasshrugs/braintumorclass/notebook 
+
 Imagine if you could take a picture of a spot that has recently appeared on your skin and have an app tell you whether or not you should actually be worried about it. While they shouldn't aim to replace doctors or dispense medical advice, large scale deep learning models have the potential to bring efficient and affordable medical care to billions of people around the world.
 
 The purpose of this project is to create a deep learning model capable of classifying and potentially segmenting (that is, drawing an area around) brain tumors from MRI scan images. This sort of classification project could assist doctors in diagnoses & automate tumor measurements with potentially life-saving impacts.
